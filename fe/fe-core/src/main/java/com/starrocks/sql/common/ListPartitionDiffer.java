@@ -25,6 +25,7 @@ import com.starrocks.catalog.Table;
 import com.starrocks.catalog.mv.MVTimelinessArbiter;
 import com.starrocks.common.util.DebugUtil;
 import com.starrocks.connector.PartitionUtil;
+import com.starrocks.connector.iceberg.IcebergPartitionUtils.InvalidPartitionValueException;
 import com.starrocks.sql.analyzer.AnalyzerUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -330,6 +331,9 @@ public final class ListPartitionDiffer extends PartitionDiffer {
                 refBaseTablePartitionMap.put(refBaseTable, basePartitionCells);
             }
         } catch (Exception e) {
+            if (!queryRewriteParams.isQueryRewrite() && e instanceof InvalidPartitionValueException) {
+                throw (InvalidPartitionValueException) e;
+            }
             LOG.warn("Materialized view compute partition difference with base table failed.",
                     DebugUtil.getStackTrace(e));
             return null;

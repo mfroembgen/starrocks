@@ -31,6 +31,8 @@ import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.ast.CreateMaterializedViewStatement;
 import com.starrocks.sql.ast.RangeDistributionDesc;
 import com.starrocks.sql.ast.ShowStmt;
+import com.starrocks.sql.ast.StatementBase;
+import com.starrocks.sql.ast.TableRelation;
 import com.starrocks.sql.plan.ConnectorPlanTestBase;
 import com.starrocks.type.IntegerType;
 import com.starrocks.utframe.StarRocksAssert;
@@ -240,6 +242,80 @@ public class MaterializedViewAnalyzerTest {
         analyzeFail("create materialized view mv partition by k1 distributed by hash(k2) buckets 3 refresh async " +
                         "as select  k1, k2 from tbl1 where rand() > 0.5",
                 "Materialized view query statement select item rand() not supported nondeterministic function.");
+    }
+
+    @Test
+    public void testCreateMaterializedViewWithTimeTravelClause() {
+        for (String source : List.of(
+                "select id, data, date from iceberg0.partitioned_db.t1 for version as of 1",
+                "with cte as (select id, data, date from iceberg0.partitioned_db.t1 for version as of 1) " +
+                        "select id, data, date from cte",
+                "select id, data, date from iceberg0.partitioned_db.t1 for timestamp as of '2024-01-01 00:00:00'")) {
+            analyzeFail("create materialized view mv_time_travel " +
+                            "distributed by hash(id) buckets 3 refresh deferred manual as " + source,
+                    "Do not support create materialized view with time travel clause");
+        }
+    }
+
+    @Test
+    public void testCreateViewWithTimeTravelClause() {
+        for (String source : List.of(
+                "select id, data from iceberg0.partitioned_db.t1 for version as of 1",
+                "with cte as (select id, data from iceberg0.partitioned_db.t1 for version as of 1) " +
+                        "select id, data from cte")) {
+            analyzeFail("create view test.view_time_travel as " + source,
+                    "Do not support create view with time travel clause");
+        }
+    }
+
+    @Test
+    public void testAlterViewWithTimeTravelClause() throws Exception {
+        starRocksAssert.withView("create view test.view_alter_time_travel as select k1 from test.tbl1", () ->
+                analyzeFail("alter view test.view_alter_time_travel as " +
+                                "select id, data from iceberg0.partitioned_db.t1 for version as of 1",
+                        "Do not support alter view with time travel clause"));
+    }
+
+    @Test
+    public void testTimeTravelClauseOnViewRelation() throws Exception {
+        starRocksAssert.withView("create view test.base_view_time_travel as select k1, k2 from test.tbl1", () -> {
+            analyzeFail("select k1 from test.base_view_time_travel for version as of 1",
+                    "Unsupported relation type for temporal clauses, relation type: VIEW");
+            analyzeFail("create view test.view_time_travel_on_view as " +
+                            "select k1 from test.base_view_time_travel for version as of 1",
+                    "Unsupported relation type for temporal clauses, relation type: VIEW");
+            analyzeFail("create materialized view mv_time_travel_on_view " +
+                            "distributed by hash(k2) buckets 3 refresh deferred manual as " +
+                            "select k1, k2 from test.base_view_time_travel for version as of 1",
+                    "Unsupported relation type for temporal clauses, relation type: VIEW");
+            analyzeFail("alter view test.base_view_time_travel as " +
+                            "select k1, k2 from test.base_view_time_travel for version as of 1",
+                    "Unsupported relation type for temporal clauses, relation type: VIEW");
+        });
+    }
+
+    @Test
+    public void testTimeTravelClauseOnCteRelation() {
+        analyzeFail("with cte_time_travel_base as (select k1 from test.tbl1) " +
+                        "select k1 from cte_time_travel_base for version as of 1",
+                "Unsupported relation type for temporal clauses, relation type: CTE");
+    }
+
+    @Test
+    public void testDirectTimeTravelQueryRemainsSupported() {
+        analyzeSuccess("select id, data from iceberg0.partitioned_db.t1 for version as of 1");
+    }
+
+    @Test
+    public void testStructuredTimeTravelClauseWithoutOriginalTextIsRejected() {
+        StatementBase query = AnalyzeTestUtil.parseSql(
+                "select id from iceberg0.partitioned_db.t1 for version as of 1");
+        TableRelation relation = AnalyzerUtils.collectTableRelations(query).get(0);
+        relation.setQueryPeriodString(null);
+        Assertions.assertNotNull(relation.getQueryPeriod());
+        SemanticException error = Assertions.assertThrows(SemanticException.class,
+                () -> AnalyzerUtils.prohibitTimeTravelQuery(query, "create materialized view"));
+        Assertions.assertTrue(error.getMessage().contains("Do not support create materialized view with time travel clause"));
     }
 
     @Test

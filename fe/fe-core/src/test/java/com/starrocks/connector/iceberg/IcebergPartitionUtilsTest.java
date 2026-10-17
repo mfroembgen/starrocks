@@ -14,6 +14,9 @@
 
 package com.starrocks.connector.iceberg;
 
+import com.google.common.collect.Range;
+import com.starrocks.catalog.Column;
+import com.starrocks.catalog.IcebergTable;
 import com.starrocks.common.util.TimeUtils;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.sql.plan.ConnectorPlanTestBase;
@@ -30,6 +33,9 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.File;
 import java.io.IOException;
 import java.util.TimeZone;
+
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class IcebergPartitionUtilsTest extends TableTestBase {
     @TempDir
@@ -113,6 +119,67 @@ public class IcebergPartitionUtilsTest extends TableTestBase {
         result = IcebergPartitionUtils.normalizeTimePartitionName(partitionName, partitionField, SCHEMA_E,
                 DateType.DATETIME);
         Assertions.assertEquals("2020-01-02 12:00:00", result);
+    }
+
+    @Test
+    public void testNormalizeProlepticYearAndLeapDay() {
+        PartitionField day = SPEC_E_4.fields().get(0);
+        for (String value : new String[] {"0000-01-01", "0000-02-29", "2000-02-29", "9999-12-31"}) {
+            Assertions.assertEquals(value, IcebergPartitionUtils.normalizeTimePartitionName(
+                    value, day, SCHEMA_E, DateType.DATE));
+        }
+        Assertions.assertEquals("0000-01-01", IcebergPartitionUtils.normalizeTimePartitionName(
+                "0000", SPEC_E_2.fields().get(0), SCHEMA_E, DateType.DATE));
+        Assertions.assertEquals("0000-02-01", IcebergPartitionUtils.normalizeTimePartitionName(
+                "0000-02", SPEC_E_3.fields().get(0), SCHEMA_E, DateType.DATE));
+    }
+
+    @Test
+    public void testNormalizeInvalidPartitionFailsWithoutChangingItsValue() {
+        PartitionField day = SPEC_E_4.fields().get(0);
+        for (String value : new String[] {"1900-02-29", "2024-02-30", "12000-05-25", "-0001-01-01"}) {
+            IcebergPartitionUtils.InvalidPartitionValueException error = Assertions.assertThrows(
+                    IcebergPartitionUtils.InvalidPartitionValueException.class,
+                    () -> IcebergPartitionUtils.normalizeTimePartitionName(value, day, SCHEMA_E, DateType.DATETIME));
+            Assertions.assertTrue(error.getMessage().contains(value));
+            Assertions.assertTrue(error.getMessage().contains("[0000, 9999]"));
+            Assertions.assertTrue(error.getMessage().contains("day"));
+            Assertions.assertNotNull(error.getCause());
+        }
+        Assertions.assertThrows(IcebergPartitionUtils.InvalidPartitionValueException.class,
+                () -> IcebergPartitionUtils.normalizeTimePartitionName(
+                        "2024-01-01-24", SPEC_E_5.fields().get(0), SCHEMA_E, DateType.DATETIME));
+    }
+
+    @Test
+    public void testNormalizeTimeZoneDateBoundaryAndOverflow() {
+        new MockUp<TimeUtils>() {
+            @Mock
+            public TimeZone getTimeZone() {
+                return TimeZone.getTimeZone("GMT-6");
+            }
+        };
+        PartitionField day = SPEC_D_4.fields().get(0);
+        Assertions.assertEquals("2023-12-31 18:00:00", IcebergPartitionUtils.normalizeTimePartitionName(
+                "2024-01-01", day, SCHEMA_D, DateType.DATETIME));
+        Assertions.assertThrows(IcebergPartitionUtils.InvalidPartitionValueException.class,
+                () -> IcebergPartitionUtils.normalizeTimePartitionName("0000-01-01", day, SCHEMA_D, DateType.DATETIME));
+    }
+
+    @Test
+    public void testYearZeroPartitionRangePreservesLeapDay() {
+        IcebergTable table = mock(IcebergTable.class);
+        when(table.getNativeTable()).thenReturn(mockedNativeTableJ);
+        when(table.getColumn("ts")).thenReturn(new Column("ts", DateType.DATETIME));
+        Range<String> range = IcebergPartitionUtils.toPartitionRange(
+                table, "ts", "0000-02-29", SPEC_E_4.fields().get(0), true);
+        Assertions.assertEquals("0000-02-29 00:00:00", range.lowerEndpoint());
+        Assertions.assertEquals("0000-03-01 00:00:00", range.upperEndpoint());
+
+        when(table.getColumn("ts")).thenReturn(new Column("ts", DateType.DATE));
+        range = IcebergPartitionUtils.toPartitionRange(table, "ts", "0000-02-29", SPEC_E_4.fields().get(0), true);
+        Assertions.assertEquals("0000-02-29", range.lowerEndpoint());
+        Assertions.assertEquals("0000-03-01", range.upperEndpoint());
     }
 
     private static File newFolder(File root, String... subDirs) throws IOException {

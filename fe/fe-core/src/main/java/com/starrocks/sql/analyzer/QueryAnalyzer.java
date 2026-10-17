@@ -617,6 +617,16 @@ public class QueryAnalyzer {
             ((TableRelation) fromRelation).setPruneScanColumns(scanColumns);
         }
 
+        private boolean hasTemporalClause(TableRelation tableRelation) {
+            return tableRelation.getQueryPeriod() != null || tableRelation.getQueryPeriodString() != null;
+        }
+
+        private void checkNoTemporalClauseOnNonTableRelation(TableRelation tableRelation, String relationType) {
+            if (hasTemporalClause(tableRelation)) {
+                throw unsupportedException("Unsupported relation type for temporal clauses, relation type: " + relationType);
+            }
+        }
+
         private Relation resolveTableRef(Relation relation, Scope scope, Set<TableName> aliasSet) {
             if (relation instanceof JoinRelation) {
                 JoinRelation join = (JoinRelation) relation;
@@ -662,6 +672,8 @@ public class QueryAnalyzer {
                 if (tableName != null && Strings.isNullOrEmpty(tableName.getDb())) {
                     Optional<CTERelation> withQuery = scope.getCteQueries(tableName.getTbl());
                     if (withQuery.isPresent()) {
+                        checkNoTemporalClauseOnNonTableRelation(tableRelation, "CTE");
+
                         CTERelation withRelation = withQuery.get();
                         withRelation.addTableRef();
                         RelationFields withRelationFields = withQuery.get().getRelationFields();
@@ -716,6 +728,8 @@ public class QueryAnalyzer {
 
                 Relation r;
                 if (table instanceof View) {
+                    checkNoTemporalClauseOnNonTableRelation(tableRelation, table.getType().name());
+
                     View view = (View) table;
                     QueryStatement queryStatement = takePreResolvedViewBody(view);
                     if (queryStatement == null) {
@@ -728,6 +742,8 @@ public class QueryAnalyzer {
 
                     r = viewRelation;
                 } else if (table instanceof ConnectorView) {
+                    checkNoTemporalClauseOnNonTableRelation(tableRelation, table.getType().name());
+
                     ConnectorView connectorView = (ConnectorView) table;
                     View view = new View(connectorView.getId(), connectorView.getName(), connectorView.getFullSchema(),
                             connectorView.getType());
@@ -742,7 +758,7 @@ public class QueryAnalyzer {
 
                     r = viewRelation;
                 } else {
-                    if (tableRelation.getQueryPeriodString() != null && !table.isTemporal()) {
+                    if (hasTemporalClause(tableRelation) && !table.isTemporal()) {
                         throw unsupportedException("Unsupported table type for temporal clauses, table type: " +
                                 table.getType());
                     }
