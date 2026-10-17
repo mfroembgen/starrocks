@@ -9,12 +9,12 @@ description: "使用 DataSketches Theta 草图返回近似去重计数。比 COU
 
 `ds_theta_count_distinct` 类似于 `APPROX_COUNT_DISTINCT(expr)` 和 `DS_HLL_COUNT_DISTINCT(expr)`，但由于采用了 Apache DataSketches，因此精度不同。更多信息请参见 [Theta Sketches](https://datasketches.apache.org/docs/Theta/InverseEstimate.html)。
 
-相对误差为 3.125%（95% 置信度）。更多信息请参见 [relative error table](https://datasketches.apache.org/docs/Theta/ThetaErrorTable.html)。
+默认 `log_k` 为 14（容量 16,384），可选精度必须为 [5, 26] 内的整数常量。估算值四舍五入为整数。更多信息请参见 [relative error table](https://datasketches.apache.org/docs/Theta/ThetaErrorTable.html)。
 
 ## 语法
 
 ```plaintext
-BIGINT ds_theta_count_distinct(expr)
+BIGINT ds_theta_count_distinct(expr[, log_k])
 ```
 
 - `expr`: 要计算近似 COUNT DISTINCT 值的列。
@@ -37,7 +37,7 @@ mysql> select ds_theta_count_distinct(id), ds_theta_count_distinct(province), ds
 +-----------------------------+-----------------------------------+------------------------------+-----------------------------+
 | ds_theta_count_distinct(id) | ds_theta_count_distinct(province) | ds_theta_count_distinct(age) | ds_theta_count_distinct(dt) |
 +-----------------------------+-----------------------------------+------------------------------+-----------------------------+
-|                      100215 |                            100846 |                          100 |                           1 |
+|                      99616 |                            100551 |                          100 |                           1 |
 +-----------------------------+-----------------------------------+------------------------------+-----------------------------+
 1 row in set (0.62 sec)
 ```

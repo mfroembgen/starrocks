@@ -1824,6 +1824,9 @@ CONF_mInt32(agg_hash_map_prefetch_dist, "16");
 // contended many-driver-per-core deployments where the effective L2 share per
 // table is smaller than the nominal per-core size.
 CONF_mDouble(agg_prefetch_l2_ratio, "1.0");
+// Default Theta precision for accumulation and unframed imports; immutable and validated in [5, 26].
+// Set the same value on all workers: a lower-precision partial state cannot recover discarded hashes.
+CONF_Int32(theta_sketch_default_lg_k, "14");
 // sink buffer memory limit per driver
 CONF_mInt64(sink_buffer_mem_limit_per_driver, "134217728");
 

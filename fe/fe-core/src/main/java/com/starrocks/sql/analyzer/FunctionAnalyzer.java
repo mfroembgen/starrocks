@@ -232,8 +232,10 @@ public class FunctionAnalyzer {
                 throw new SemanticException(String.format("Resolved function %s has no wildcard decimal as return type",
                         fn.functionName()), functionCallExpr.getPos());
             }
-            if (FunctionSet.DS_HLL_COUNT_DISTINCT.equalsIgnoreCase(AggStateUtils.getAggFuncNameOfCombinator(funcName))) {
-                // ds_hll_count_distinct_union's param type should be varbinary type.
+            String baseAggName = AggStateUtils.getAggFuncNameOfCombinator(funcName);
+            if (FunctionSet.DS_HLL_COUNT_DISTINCT.equalsIgnoreCase(baseAggName)
+                    || FunctionSet.DS_THETA_COUNT_DISTINCT.equalsIgnoreCase(baseAggName)) {
+                // ds_hll/ds_theta union's param type should be varbinary type.
                 if (!functionCallExpr.getChild(0).getType().isBinaryType()) {
                     throw new SemanticException(String.format("Resolved function %s has no binary as argument type",
                             fn.functionName()), functionCallExpr.getPos());
@@ -249,8 +251,10 @@ public class FunctionAnalyzer {
                 throw new SemanticException(String.format("Resolved function %s has no wildcard decimal as return type",
                         fn.functionName()), functionCallExpr.getPos());
             }
-            if (FunctionSet.DS_HLL_COUNT_DISTINCT.equalsIgnoreCase(AggStateUtils.getAggFuncNameOfCombinator(funcName))) {
-                // ds_hll_count_distinct_union's param type should be varbinary type.
+            String baseAggName = AggStateUtils.getAggFuncNameOfCombinator(funcName);
+            if (FunctionSet.DS_HLL_COUNT_DISTINCT.equalsIgnoreCase(baseAggName)
+                    || FunctionSet.DS_THETA_COUNT_DISTINCT.equalsIgnoreCase(baseAggName)) {
+                // ds_hll/ds_theta merge's param type should be varbinary type.
                 if (!functionCallExpr.getChild(0).getType().isBinaryType()) {
                     throw new SemanticException(String.format("Resolved function %s has no binary as argument type",
                             fn.functionName()), functionCallExpr.getPos());
@@ -681,6 +685,15 @@ public class FunctionAnalyzer {
             }
         }
 
+        if (fnName.equals(FunctionSet.DS_THETA_COUNT_DISTINCT) && functionCallExpr.getChildren().size() == 2) {
+            Expr precisionExpr = functionCallExpr.getChild(1);
+            Optional<Long> precision = extractIntegerValue(precisionExpr);
+            if (!precision.isPresent() || precision.get() < 5 || precision.get() > 26) {
+                throw new SemanticException(
+                        fnName + " second parameter must be a constant integer between 5 and 26", precisionExpr.getPos());
+            }
+        }
+
         // ds_hll_count_distinct
         if (fnName.equals(FunctionSet.DS_HLL_COUNT_DISTINCT)) {
             int argSize = functionCallExpr.getChildren().size();
@@ -761,6 +774,14 @@ public class FunctionAnalyzer {
         // collection SQL wraps the bucket_num literal in such a cast, so fold it to the inner value.
         if (expr instanceof CastExpr && expr.getType().isFixedPointType()) {
             return extractIntegerValue(expr.getChild(0));
+        }
+
+        if (expr instanceof LargeIntLiteral) {
+            try {
+                return Optional.of(((LargeIntLiteral) expr).getValue().longValueExact());
+            } catch (ArithmeticException e) {
+                return Optional.empty();
+            }
         }
 
         if (expr instanceof LiteralExpr && expr.getType().isFixedPointType()) {
