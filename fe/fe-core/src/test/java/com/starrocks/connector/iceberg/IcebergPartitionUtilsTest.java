@@ -39,14 +39,14 @@ import static org.mockito.Mockito.when;
 
 public class IcebergPartitionUtilsTest extends TableTestBase {
     @TempDir
-    public static File temp;
+    public static File catalogTemp;
     private static ConnectContext connectContext;
 
     @BeforeAll
     public static void beforeClass() throws Exception {
         UtFrameUtils.createMinStarRocksCluster();
         connectContext = UtFrameUtils.createDefaultCtx();
-        ConnectorPlanTestBase.mockAllCatalogs(connectContext, newFolder(temp, "junit").toURI().toString());
+        ConnectorPlanTestBase.mockAllCatalogs(connectContext, newFolder(catalogTemp, "junit").toURI().toString());
     }
 
     @Test
