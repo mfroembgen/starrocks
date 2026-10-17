@@ -1,0 +1,141 @@
+name: Native Theta images
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: theta-images-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_TAG: 4.1.6-theta-${{ github.sha }}
+  IMAGE_ROOT: ghcr.io/mfroembgen/starrocks
+
+jobs:
+  tests:
+    if: github.repository == 'mfroembgen/starrocks'
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Reserve space for the native C++ build
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache /usr/local/share/boost /usr/share/swift
+          df -h /
+          test "$(df --output=avail -BG / | tail -1 | tr -dc 0-9)" -ge 40
+      - name: FE semantic and planner tests
+        run: docker buildx build --progress=plain --platform linux/${{ matrix.arch }} --build-arg SOURCE_SHA="$GITHUB_SHA" --target fe-test-reports --output type=local,dest=fe-test-reports -f docker/dockerfiles/theta/Dockerfile .
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: fe-tests-${{ matrix.arch }}
+          path: fe-test-reports/
+          retention-days: 30
+      - name: BE Theta unit tests
+        run: docker buildx build --progress=plain --platform linux/${{ matrix.arch }} --build-arg SOURCE_SHA="$GITHUB_SHA" --target be-test-reports --output type=local,dest=be-test-reports -f docker/dockerfiles/theta/Dockerfile .
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: be-tests-${{ matrix.arch }}
+          path: be-test-reports/
+          retention-days: 30
+
+  images:
+    needs: tests
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Reserve space for the native C++ build
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache /usr/local/share/boost /usr/share/swift
+          df -h /
+          test "$(df --output=avail -BG / | tail -1 | tr -dc 0-9)" -ge 40
+      - name: Build FE and shared-data BE/CN from this source commit
+        run: |
+          for role in fe be; do
+            docker buildx build --progress=plain --load --platform linux/${{ matrix.arch }} --build-arg SOURCE_SHA="$GITHUB_SHA" --target "$role" -t "${IMAGE_ROOT}-${role}:${IMAGE_TAG}-${{ matrix.arch }}" -f docker/dockerfiles/theta/Dockerfile .
+          done
+          docker tag "${IMAGE_ROOT}-be:${IMAGE_TAG}-${{ matrix.arch }}" "${IMAGE_ROOT}-cn:${IMAGE_TAG}-${{ matrix.arch }}"
+      - name: Verify native image architecture, source and SQL behavior
+        run: |
+          for role in fe be cn; do
+            image="${IMAGE_ROOT}-${role}:${IMAGE_TAG}-${{ matrix.arch }}"
+            test "$(docker image inspect --format '{{.Architecture}}' "$image")" = '${{ matrix.arch }}'
+            test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" = "$GITHUB_SHA"
+          done
+          bash docker/dockerfiles/theta/smoke.sh "${IMAGE_ROOT}-fe:${IMAGE_TAG}-${{ matrix.arch }}" "${IMAGE_ROOT}-be:${IMAGE_TAG}-${{ matrix.arch }}"
+      - name: Publish tested architecture images
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          for role in fe be cn; do
+            image="${IMAGE_ROOT}-${role}:${IMAGE_TAG}-${{ matrix.arch }}"
+            docker push "$image"
+            digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image" | cut -d@ -f2)
+            jq -n --arg source "$GITHUB_SHA" --arg platform 'linux/${{ matrix.arch }}' --arg image "$image" --arg digest "$digest" '{source:$source,platform:$platform,image:$image,digest:$digest}' > "${role}-${{ matrix.arch }}.json"
+          done
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: image-digests-${{ matrix.arch }}
+          path: '*-${{ matrix.arch }}.json'
+          retention-days: 90
+
+  manifests:
+    needs: images
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: image-digests-*
+          merge-multiple: true
+          path: digests
+      - name: Publish and verify native multiarch indexes
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          for role in fe be cn; do
+            image="${IMAGE_ROOT}-${role}:${IMAGE_TAG}"
+            amd64=$(jq -r .digest "digests/${role}-amd64.json")
+            arm64=$(jq -r .digest "digests/${role}-arm64.json")
+            docker buildx imagetools create -t "$image" "${IMAGE_ROOT}-${role}@${amd64}" "${IMAGE_ROOT}-${role}@${arm64}"
+            docker buildx imagetools inspect --raw "$image" > "digests/${role}-index.json"
+            jq -e --arg amd64 "$amd64" --arg arm64 "$arm64" '[.manifests[] | select(.platform.os == "linux") | [.platform.architecture,.digest]] | sort == [["amd64",$amd64],["arm64",$arm64]]' "digests/${role}-index.json"
+            docker buildx imagetools inspect "$image" | tee "digests/${role}-manifest.txt"
+            echo "### ${image}" >> "$GITHUB_STEP_SUMMARY"
+            cat "digests/${role}-manifest.txt" >> "$GITHUB_STEP_SUMMARY"
+          done
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: multiarch-image-digests
+          path: digests/
+          retention-days: 90
