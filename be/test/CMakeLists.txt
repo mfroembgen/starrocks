@@ -517,6 +517,12 @@ add_executable(starrocks_test test_main.cpp $<TARGET_OBJECTS:starrocks_test_objs
 
 TARGET_LINK_LIBRARIES(starrocks_test ${TEST_LINK_LIBS})
 
+# Keep the native Theta gate independent of unrelated test compilation.
+add_executable(ds_theta_test EXCLUDE_FROM_ALL
+        test_main.cpp exprs/agg/data_sketch/ds_theta_test.cpp)
+target_compile_options(ds_theta_test PRIVATE -fno-access-control)
+target_link_libraries(ds_theta_test PRIVATE StarRocksPCH ${TEST_LINK_LIBS})
+
 
 SET(DW_TEST_FILES
     ./storage/aggregate_iterator_test.cpp

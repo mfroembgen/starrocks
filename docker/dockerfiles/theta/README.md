@@ -49,9 +49,12 @@ profiling tools, replacing their FE/BE binaries, libraries and configuration wit
 the source build. Component copies are restricted to `output/fe` and `output/be`.
 
 Both architectures must pass the selected FE semantic/planner/JUnit classes and
-the BE `DataSketchsThetaTest` suite before any image publication. XML report
-checks require every selected suite to execute tests with no failures or errors;
-reports are retained as workflow artifacts. Image builds
+all 17 cases in the BE `DataSketchsThetaTest` suite before any image publication.
+The focused `ds_theta_test` executable retains the original `test_main.cpp`,
+engine initialization and real backend libraries. It excludes unrelated test
+source compilation. XML checks require every selected case to execute without
+skips, failures or errors; the Theta names must match the unchanged test source.
+Reports are retained as workflow artifacts. Image builds
 verify embedded commit metadata, then start a temporary FE and BE and assert SQL
 Theta count and serialized-state estimate with a NULL input. This local smoke
 test does not validate an object store, IAM, shared-data storage, or a production
@@ -61,10 +64,22 @@ workload; those need the separately authorized deployment validation.
 
 Public GitHub runners have four CPUs and 16 GiB RAM. The workflow removes unused
 preinstalled SDKs on its disposable runners and requires at least 40 GiB free
-disk before compiling with `-j 2`. BE unit tests and image builds use separate
-jobs, each with a six-hour limit. Upstream's BE test selector filters execution
-but still compiles the complete BE test binary. A timeout or capacity failure
-must fail the publication gate; use a suitably sized native runner if needed.
+disk. Backend compilation uses three jobs. Tests and runtime image builds run
+concurrently on separate native runners, each with a six-hour job limit and a
+315-minute compilation-step limit that leaves time to retain diagnostics.
+The runtime build keeps `MAKE_TEST=OFF`; test objects are never shipped.
+
+Native FE/BE smoke checks run before images are saved as checksummed temporary
+workflow artifacts. Publication loads those exact images only after both native
+test jobs and both image-build jobs succeed. It verifies archive checksums,
+architecture and source labels again before pushing. BE and CN share one saved
+backend payload. No registry publication occurs before the test gates pass.
+
+The pinned BuildKit daemon retains complete progress logs instead of clipping
+them at 2 MiB, and runner resource samples are retained on success or failure.
+The upstream `--module` argument still filters execution only; `--build-target`
+selects the focused CMake build target. A timeout or capacity failure fails the
+publication gate.
 
 From a clean checkout of the commit to build, on a matching Linux native CPU:
 

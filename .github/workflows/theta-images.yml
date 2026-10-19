@@ -36,27 +36,42 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache /usr/local/share/boost /usr/share/swift
           df -h /
           test "$(df --output=avail -BG / | tail -1 | tr -dc 0-9)" -ge 40
+          nproc
+          free -h
+          vmstat -w 60 > "$RUNNER_TEMP/runner-resource-usage.txt" 2>&1 &
+      - name: Configure native builder with complete progress logs
+        run: |
+          docker buildx create --name theta --driver docker-container --use --bootstrap \
+            --driver-opt image=moby/buildkit:v0.34.0@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c \
+            --driver-opt env.BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
+            --driver-opt env.BUILDKIT_STEP_LOG_MAX_SPEED=-1
+      - name: Verify test-report gates
+        run: python3 -B -m unittest discover -s docker/dockerfiles/theta -p 'test_*.py'
       - name: FE semantic and planner tests
-        run: docker buildx build --progress=plain --platform linux/${{ matrix.arch }} --build-arg SOURCE_SHA="$GITHUB_SHA" --target fe-test-reports --output type=local,dest=fe-test-reports -f docker/dockerfiles/theta/Dockerfile .
+        run: docker buildx build --progress=plain --platform linux/${{ matrix.arch }} --build-arg SOURCE_SHA="$GITHUB_SHA" --target fe-test-reports --output type=local,dest="$RUNNER_TEMP/fe-test-reports" -f docker/dockerfiles/theta/Dockerfile .
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: fe-tests-${{ matrix.arch }}
-          path: fe-test-reports/
+          path: ${{ runner.temp }}/fe-test-reports/
           retention-days: 30
       - name: BE Theta unit tests
-        run: docker buildx build --progress=plain --platform linux/${{ matrix.arch }} --build-arg SOURCE_SHA="$GITHUB_SHA" --target be-test-reports --output type=local,dest=be-test-reports -f docker/dockerfiles/theta/Dockerfile .
+        timeout-minutes: 315
+        run: docker buildx build --progress=plain --platform linux/${{ matrix.arch }} --build-arg SOURCE_SHA="$GITHUB_SHA" --target be-test-reports --output type=local,dest="$RUNNER_TEMP/be-test-reports" -f docker/dockerfiles/theta/Dockerfile .
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: be-tests-${{ matrix.arch }}
-          path: be-test-reports/
+          path: ${{ runner.temp }}/be-test-reports/
+          retention-days: 30
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: test-runner-resources-${{ matrix.arch }}
+          path: ${{ runner.temp }}/runner-resource-usage.txt
           retention-days: 30
 
-  images:
-    needs: tests
+  builds:
+    if: github.repository == 'mfroembgen/starrocks'
     timeout-minutes: 360
-    permissions:
-      contents: read
-      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -75,7 +90,17 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache /usr/local/share/boost /usr/share/swift
           df -h /
           test "$(df --output=avail -BG / | tail -1 | tr -dc 0-9)" -ge 40
+          nproc
+          free -h
+          vmstat -w 60 > "$RUNNER_TEMP/runner-resource-usage.txt" 2>&1 &
+      - name: Configure native builder with complete progress logs
+        run: |
+          docker buildx create --name theta --driver docker-container --use --bootstrap \
+            --driver-opt image=moby/buildkit:v0.34.0@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c \
+            --driver-opt env.BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
+            --driver-opt env.BUILDKIT_STEP_LOG_MAX_SPEED=-1
       - name: Build FE and shared-data BE/CN from this source commit
+        timeout-minutes: 315
         run: |
           for role in fe be; do
             docker buildx build --progress=plain --load --platform linux/${{ matrix.arch }} --build-arg SOURCE_SHA="$GITHUB_SHA" --target "$role" -t "${IMAGE_ROOT}-${role}:${IMAGE_TAG}-${{ matrix.arch }}" -f docker/dockerfiles/theta/Dockerfile .
@@ -89,6 +114,52 @@ jobs:
             test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" = "$GITHUB_SHA"
           done
           bash docker/dockerfiles/theta/smoke.sh "${IMAGE_ROOT}-fe:${IMAGE_TAG}-${{ matrix.arch }}" "${IMAGE_ROOT}-be:${IMAGE_TAG}-${{ matrix.arch }}"
+      - name: Preserve tested images until all test gates pass
+        run: |
+          docker image save "${IMAGE_ROOT}-fe:${IMAGE_TAG}-${{ matrix.arch }}" "${IMAGE_ROOT}-be:${IMAGE_TAG}-${{ matrix.arch }}" "${IMAGE_ROOT}-cn:${IMAGE_TAG}-${{ matrix.arch }}" | gzip -1 > theta-images.tar.gz
+          sha256sum theta-images.tar.gz > theta-images.tar.gz.sha256
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: tested-images-${{ matrix.arch }}
+          path: theta-images.tar.gz*
+          compression-level: 0
+          retention-days: 2
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: build-runner-resources-${{ matrix.arch }}
+          path: ${{ runner.temp }}/runner-resource-usage.txt
+          retention-days: 30
+
+  images:
+    needs: [tests, builds]
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Reserve space for tested images
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache /usr/local/share/boost /usr/share/swift
+          df -h /
+          test "$(df --output=avail -BG / | tail -1 | tr -dc 0-9)" -ge 40
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: tested-images-${{ matrix.arch }}
+      - name: Load exact tested images
+        run: |
+          sha256sum -c theta-images.tar.gz.sha256
+          docker image load --input theta-images.tar.gz
+          for role in fe be cn; do
+            image="${IMAGE_ROOT}-${role}:${IMAGE_TAG}-${{ matrix.arch }}"
+            test "$(docker image inspect --format '{{.Architecture}}' "$image")" = '${{ matrix.arch }}'
+            test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" = "$GITHUB_SHA"
+          done
       - name: Publish tested architecture images
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}

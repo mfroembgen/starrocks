@@ -5,7 +5,8 @@ COPY . .
 ARG SOURCE_SHA
 ENV STARROCKS_VERSION=4.1.6-theta \
     STARROCKS_COMMIT_HASH=${SOURCE_SHA} \
-    BUILD_TYPE=Release
+    BUILD_TYPE=Release \
+    CUSTOM_MVN="mvn --batch-mode --no-transfer-progress"
 RUN test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
 
 FROM source AS fe-tests
@@ -18,7 +19,8 @@ COPY --from=fe-tests /workspace/fe/fe-core/target/surefire-reports/ /
 
 FROM source AS be-tests
 ENV GTEST_OUTPUT=xml:/workspace/be-test-reports/
-RUN ./run-be-ut.sh -j 2 --test DataSketchsThetaTest && \
+RUN ./run-be-ut.sh -j 3 --build-target ds_theta_test --module ds_theta_test \
+    --without-debug-symbol-split --without-java-ext --gtest_filter 'DataSketchsThetaTest.*' && \
     python3 docker/dockerfiles/theta/check-tests.py be-test-reports DataSketchsThetaTest && \
     rm -rf be/ut_build_Release be/output
 
@@ -29,7 +31,7 @@ FROM source AS fe-build
 RUN ./build.sh --fe --with-maven-batch-mode ON -j 2
 
 FROM source AS be-build
-RUN ./build.sh --be --enable-shared-data --with-maven-batch-mode ON -j 2 && \
+RUN ./build.sh --be --enable-shared-data --with-maven-batch-mode ON -j 3 && \
     rm -f output/be/lib/starrocks_be.debuginfo && rm -rf be/build_Release be/output
 
 # Preserve upstream runtime dependencies, profiling tools and Kubernetes scripts.
