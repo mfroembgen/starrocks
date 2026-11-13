@@ -14,6 +14,7 @@
 
 package com.starrocks.scheduler.mv;
 
+import com.google.common.base.Strings;
 import com.starrocks.catalog.BaseTableInfo;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.MaterializedView;
@@ -23,6 +24,11 @@ import com.starrocks.scheduler.MvTaskRunContext;
 import com.starrocks.scheduler.mv.hybrid.MVHybridRefreshProcessor;
 import com.starrocks.scheduler.mv.ivm.MVIVMRefreshProcessor;
 import com.starrocks.scheduler.mv.pct.MVPCTRefreshProcessor;
+import com.starrocks.sql.analyzer.AnalyzerUtils;
+import com.starrocks.sql.analyzer.SemanticException;
+import com.starrocks.sql.ast.StatementBase;
+import com.starrocks.sql.common.DmlException;
+import com.starrocks.sql.parser.SqlParser;
 
 import java.util.Map;
 
@@ -32,6 +38,21 @@ public class MVRefreshProcessorFactory {
     public MVRefreshProcessor newProcessor(Database db, MaterializedView mv,
                                            MvTaskRunContext mvContext,
                                            IMaterializedViewMetricsEntity mvEntity) {
+        // Older MVs may retain the temporal clause only in the original definition, not the executable SQL.
+        String definition = mv.getOriginalViewDefineSql();
+        if (Strings.isNullOrEmpty(definition)) {
+            definition = mv.getMVQueryDefinedSql();
+        }
+        if (!Strings.isNullOrEmpty(definition)) {
+            StatementBase query = SqlParser.parseSingleStatement(definition,
+                    mvContext.getCtx().getSessionVariable().getSqlMode());
+            try {
+                AnalyzerUtils.prohibitTimeTravelQuery(query, "refresh materialized view");
+            } catch (SemanticException e) {
+                throw new DmlException("Materialized view %s cannot be refreshed because time-travel definitions " +
+                        "are unsupported. Recreate it from a supported definition.", e, mv.getName());
+            }
+        }
         MaterializedView.RefreshMode refreshMode = mv.getCurrentRefreshMode();
         switch (refreshMode) {
             case INCREMENTAL:

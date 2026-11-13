@@ -47,6 +47,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.time.format.ResolverStyle;
 import java.util.Base64;
 import java.util.List;
 
@@ -54,6 +55,12 @@ import static com.starrocks.connector.iceberg.IcebergPartitionTransform.YEAR;
 
 public class IcebergPartitionUtils {
     private static final Logger LOG = LogManager.getLogger(IcebergPartitionUtils.class);
+
+    public static class InvalidPartitionValueException extends StarRocksConnectorException {
+        private InvalidPartitionValueException(String message, Throwable cause) {
+            super(message, cause);
+        }
+    }
 
     // Normalize partition name to yyyy-MM-dd (Type is Date) or yyyy-MM-dd HH:mm:ss (Type is Datetime)
     // Iceberg partition field transform support year, month, day, hour now,
@@ -66,19 +73,19 @@ public class IcebergPartitionUtils {
                                                     PartitionField partitionField,
                                                     Schema schema,
                                                     Type type) {
-        DateTimeFormatter dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+        String originalPartitionName = partitionName;
+        DateTimeFormatter dateTimeFormatter = DateTimeFormatter.ofPattern("uuuu-MM-dd")
+                .withResolverStyle(ResolverStyle.STRICT);
         boolean parseFromDate = true;
         IcebergPartitionTransform transform = IcebergPartitionTransform.fromString(partitionField.transform().toString());
         if (transform == YEAR) {
-            Preconditions.checkArgument(partitionName.length() == 4, "Invalid partition name: %s", partitionName);
             partitionName += "-01-01";
         } else if (transform == IcebergPartitionTransform.MONTH) {
-            Preconditions.checkArgument(partitionName.length() == 7, "Invalid partition name: %s", partitionName);
             partitionName += "-01";
         } else if (transform == IcebergPartitionTransform.DAY) {
-            dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+            dateTimeFormatter = DateTimeFormatter.ofPattern("uuuu-MM-dd").withResolverStyle(ResolverStyle.STRICT);
         } else if (transform == IcebergPartitionTransform.HOUR) {
-            dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd-HH");
+            dateTimeFormatter = DateTimeFormatter.ofPattern("uuuu-MM-dd-HH").withResolverStyle(ResolverStyle.STRICT);
             parseFromDate = false;
         } else {
             throw new StarRocksConnectorException("Unsupported partition transform to normalize: %s",
@@ -88,9 +95,9 @@ public class IcebergPartitionUtils {
         // partition name formatter
         DateTimeFormatter formatter = null;
         if (type.isDate()) {
-            formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+            formatter = DateTimeFormatter.ofPattern("uuuu-MM-dd");
         } else {
-            formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+            formatter = DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss");
         }
         // If has timestamp with time zone, should compute the time zone offset to UTC
         ZoneId zoneId;
@@ -112,12 +119,17 @@ public class IcebergPartitionUtils {
             }
             // convert from UTC to local time
             LocalDateTime localDateTime = convertTimezone(datetime, ZoneOffset.UTC, zoneId);
+            Preconditions.checkArgument(localDateTime.getYear() >= 0 && localDateTime.getYear() <= 9999,
+                    "Normalized partition year is outside the supported range [0000, 9999]");
             // format to string
             result = localDateTime.format(formatter);
         } catch (Exception e) {
             LOG.warn("parse partition name failed, partitionName: {}, partitionField: {}, type: {}",
                     partitionName, partitionField, type);
-            throw new StarRocksConnectorException("parse/format partition name failed", e);
+            throw new InvalidPartitionValueException(String.format(
+                    "Invalid Iceberg partition value '%s' for transform %s and type %s: " +
+                            "expected a valid date in the supported year range [0000, 9999] after time zone conversion",
+                    originalPartitionName, partitionField.transform(), type), e);
         }
         return result;
     }
@@ -216,10 +228,10 @@ public class IcebergPartitionUtils {
             LocalDateTime startDateTime = null;
             DateTimeFormatter dateTimeFormatter = null;
             if (partitiopnColumnType.isDate()) {
-                dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+                dateTimeFormatter = DateTimeFormatter.ofPattern("uuuu-MM-dd").withResolverStyle(ResolverStyle.STRICT);
                 startDateTime = LocalDate.parse(partitionValue, dateTimeFormatter).atStartOfDay();
             } else {
-                dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+                dateTimeFormatter = DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss").withResolverStyle(ResolverStyle.STRICT);
                 startDateTime = LocalDateTime.parse(partitionValue, dateTimeFormatter);
             }
             LocalDateTime endDateTime = addDateTimeInterval(startDateTime, transform);
