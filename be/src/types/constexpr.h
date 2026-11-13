@@ -31,6 +31,10 @@ constexpr int HLL_EMPTY_SIZE = 1;
 const static int MAX_HLL_LOG_K = 20;
 const static uint8_t DEFAULT_HLL_LOG_K = 17;
 
+// Imported compact Theta sketches do not carry their original lg_k.
+const static uint8_t DEFAULT_THETA_LOG_K = 14;
+const static uint64_t DEFAULT_THETA_SEED = 9001;
+
 // For JSON type
 constexpr int kJsonDefaultSize = 128;
 constexpr int kJsonMetaDefaultFormatVersion = 1;

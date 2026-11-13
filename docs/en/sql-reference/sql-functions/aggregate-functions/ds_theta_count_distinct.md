@@ -9,12 +9,12 @@ Returns the approximate value of aggregate function similar to the result of `CO
 
 `ds_theta_count_distinct` is similar to `APPROX_COUNT_DISTINCT(expr)` and `DS_HLL_COUNT_DISTINCT(expr)` but with different precisions because it adopts Apache DataSketches. For more information, see [Theta Sketches](https://datasketches.apache.org/docs/Theta/InverseEstimate.html).
 
-The relative error is 3.125% (95% confidence). For more information, see the [relative error table](https://datasketches.apache.org/docs/Theta/ThetaErrorTable.html).
+The default `log_k` is 14 (nominal capacity 16,384). The optional precision is a constant integer in [5, 26]. The integer estimate is rounded to the nearest integer. For more information, see the [relative error table](https://datasketches.apache.org/docs/Theta/ThetaErrorTable.html).
 
 ## Syntax
 
 ```plaintext
-BIGINT ds_theta_count_distinct(expr)
+BIGINT ds_theta_count_distinct(expr[, log_k])
 ```
 
 - `expr`: The column in which to calculate the approximate count distinct values.
@@ -37,7 +37,7 @@ mysql> select ds_theta_count_distinct(id), ds_theta_count_distinct(province), ds
 +-----------------------------+-----------------------------------+------------------------------+-----------------------------+
 | ds_theta_count_distinct(id) | ds_theta_count_distinct(province) | ds_theta_count_distinct(age) | ds_theta_count_distinct(dt) |
 +-----------------------------+-----------------------------------+------------------------------+-----------------------------+
-|                      100215 |                            100846 |                          100 |                           1 |
+|                      99616 |                            100551 |                          100 |                           1 |
 +-----------------------------+-----------------------------------+------------------------------+-----------------------------+
 1 row in set (0.62 sec)
 ```
