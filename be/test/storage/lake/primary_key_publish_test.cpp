@@ -619,6 +619,53 @@ TEST_P(LakePrimaryKeyPublishTest, test_interleaved_delete_then_reupsert) {
     }
 }
 
+TEST_P(LakePrimaryKeyPublishTest, test_del_tombstone_sstable_requires_cloud_native_index) {
+    if (GetParam().enable_transparent_data_encryption) {
+        GTEST_SKIP() << "covered by the unencrypted index-type parameterizations";
+    }
+    ConfigResetGuard<int64_t> eager_threshold(&config::pk_index_eager_build_threshold_bytes, 1);
+    ConfigResetGuard<bool> load_spill(&config::enable_load_spill, false);
+    const auto tablet_id = _tablet_metadata->id();
+    auto [chunk, indexes] = gen_data_and_index(kChunkSize, 0, false, false);
+    ASSIGN_OR_ABORT(auto fs, FileSystem::CreateSharedFromString(kTestGroupPath));
+
+    // Keep the index type while toggling its enable flag, including disabled CLOUD_NATIVE metadata.
+    for (bool enabled : {false, true}) {
+        SCOPED_TRACE(enabled);
+        _tablet_metadata->set_enable_persistent_index(enabled);
+        ASSERT_OK(_tablet_mgr->put_tablet_metadata(*_tablet_metadata));
+        const auto txn_id = next_id();
+        ASSIGN_OR_ABORT(auto writer, DeltaWriterBuilder()
+                                             .set_tablet_manager(_tablet_mgr.get())
+                                             .set_tablet_id(tablet_id)
+                                             .set_txn_id(txn_id)
+                                             .set_partition_id(_partition_id)
+                                             .set_mem_tracker(_mem_tracker.get())
+                                             .set_schema_id(_tablet_schema->id())
+                                             .set_slot_descriptors(&_slot_pointers)
+                                             .set_profile(&_dummy_runtime_profile)
+                                             .build());
+        ASSERT_OK(writer->open());
+        ASSERT_OK(writer->write(*chunk, indexes.data(), indexes.size()));
+        ASSERT_OK(writer->finish_with_txnlog());
+        writer->close();
+
+        ASSIGN_OR_ABORT(auto txn_log, _tablet_mgr->get_txn_log(tablet_id, txn_id));
+        const auto& op_write = txn_log->op_write();
+        ASSERT_GT(op_write.dels_meta_size(), 0);
+        ASSERT_EQ(op_write.dels_meta_size(), op_write.del_ssts_size());
+        const bool expect_sst = enabled && GetParam().persistent_index_type == PersistentIndexTypePB::CLOUD_NATIVE;
+        for (int i = 0; i < op_write.dels_meta_size(); ++i) {
+            EXPECT_FALSE(op_write.dels_meta(i).name().empty());
+            EXPECT_EQ(expect_sst, !op_write.del_ssts(i).name().empty());
+        }
+        std::vector<std::string> files;
+        ASSERT_OK(fs->get_children(join_path(kTestGroupPath, kSegmentDirectoryName), &files));
+        EXPECT_EQ(expect_sst ? op_write.del_ssts_size() : 0,
+                  std::count_if(files.begin(), files.end(), [](const auto& name) { return is_sst(name); }));
+    }
+}
+
 // A transaction whose FIRST flush is delete-only (empty upsert chunk) must still produce a real
 // (0-row) segment for that flush. That empty segment takes the leading rssid slot so the delete
 // (op_offset = its index) is ordered before a later-flush re-upsert of the same key, which then
@@ -1707,6 +1754,80 @@ TEST_P(LakePrimaryKeyPublishTest, test_recover_with_dels2) {
         check_local_persistent_index_meta(tablet_id, version);
     }
     config::enable_primary_key_recover = false;
+}
+
+// Recover rebuilds the delvecs through a temporary in-memory primary index. The fixture's key is a single INT
+// column, which V1 keeps as a native integer column but V2 encodes into a binary string, so that index must be
+// built for the tablet's encoding. Every publish below fails its index load once and recovers, which replays the
+// earlier rowsets: their segments as upserts and their del files as deletes.
+TEST_P(LakePrimaryKeyPublishTest, test_recover_with_dels_v2_encoding) {
+    // Only the cloud native index takes these V2 keys. The in-memory index of a lake tablet is built for V1 and fails
+    // to load on colliding keys, and the local persistent index, which recover deletes, is rebuilt from the segments
+    // with V1 keys that the keys of later publishes do not match.
+    if (!GetParam().enable_persistent_index ||
+        GetParam().persistent_index_type != PersistentIndexTypePB::CLOUD_NATIVE) {
+        GTEST_SKIP() << "requires cloud-native persistent index";
+    }
+    ConfigResetGuard<bool> recover_guard(&config::enable_primary_key_recover, true);
+    _tablet_metadata->mutable_schema()->set_primary_key_encoding_type(PrimaryKeyEncodingTypePB::PK_ENCODING_TYPE_V2);
+    CHECK_OK(_tablet_mgr->put_tablet_metadata(*_tablet_metadata));
+    _tablet_schema = TabletSchema::create(_tablet_metadata->schema());
+    _schema = std::make_shared<Schema>(ChunkHelper::convert_schema(_tablet_schema));
+
+    auto [chunk0, indexes] = gen_data_and_index(kChunkSize, 0, true, true);
+    auto [chunk1, indexes1] = gen_data_and_index(kChunkSize, 0, true, false);
+    auto version = 1;
+    auto tablet_id = _tablet_metadata->id();
+    std::string sync_point = "lake_index_load.1";
+    bool ingest_failure = true;
+    SyncPoint::GetInstance()->SetCallBack(sync_point, [&](void* arg) {
+        if (ingest_failure) {
+            *(Status*)arg = Status::AlreadyExist("ut_test");
+            ingest_failure = false;
+        } else {
+            ingest_failure = true;
+        }
+    });
+    SyncPoint::GetInstance()->EnableProcessing();
+    DeferOp clear_sync_point([&]() {
+        SyncPoint::GetInstance()->ClearCallBack(sync_point);
+        SyncPoint::GetInstance()->DisableProcessing();
+    });
+    for (int i = 0; i < 6; i++) {
+        int64_t txn_id = next_id();
+        ASSIGN_OR_ABORT(auto delta_writer, DeltaWriterBuilder()
+                                                   .set_tablet_manager(_tablet_mgr.get())
+                                                   .set_tablet_id(tablet_id)
+                                                   .set_txn_id(txn_id)
+                                                   .set_partition_id(_partition_id)
+                                                   .set_mem_tracker(_mem_tracker.get())
+                                                   .set_schema_id(_tablet_schema->id())
+                                                   .set_slot_descriptors(&_slot_pointers)
+                                                   .set_profile(&_dummy_runtime_profile)
+                                                   .build());
+        ASSERT_OK(delta_writer->open());
+        if (i % 2 == 0) {
+            // upsert
+            ASSERT_OK(delta_writer->write(*chunk0, indexes.data(), indexes.size()));
+        } else {
+            // delete
+            ASSERT_OK(delta_writer->write(*chunk1, indexes1.data(), indexes1.size()));
+        }
+        ASSERT_OK(delta_writer->finish_with_txnlog());
+        delta_writer->close();
+        ASSERT_OK(publish_single_version(tablet_id, version + 1, txn_id).status());
+        EXPECT_TRUE(_update_mgr->TEST_check_update_state_cache_absent(tablet_id, txn_id));
+        EXPECT_TRUE(_update_mgr->TEST_check_primary_index_cache_ref(tablet_id, 1));
+        EXPECT_TRUE(_update_mgr->try_remove_primary_index_cache(tablet_id));
+        version++;
+    }
+    ASSERT_EQ(0, read_rows(tablet_id, version));
+    ASSIGN_OR_ABORT(auto new_tablet_metadata, _tablet_mgr->get_tablet_metadata(tablet_id, version));
+    EXPECT_EQ(PrimaryKeyEncodingTypePB::PK_ENCODING_TYPE_V2, new_tablet_metadata->schema().primary_key_encoding_type());
+    EXPECT_EQ(new_tablet_metadata->rowsets_size(), 6);
+    for (int i = 0; i < 6; i++) {
+        EXPECT_EQ(new_tablet_metadata->rowsets(i).del_files_size(), i % 2);
+    }
 }
 
 TEST_P(LakePrimaryKeyPublishTest, test_index_load_failure) {

@@ -16,7 +16,11 @@ package com.starrocks.common.proc;
 
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
+import com.starrocks.alter.AlterHandler;
+import com.starrocks.alter.AlterJobV2;
+import com.starrocks.alter.LakeRollupJob;
 import com.starrocks.alter.MaterializedViewHandler;
+import com.starrocks.alter.RollupJobV2;
 import com.starrocks.catalog.Database;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.sql.ast.OrderByPair;
@@ -37,6 +41,7 @@ import java.util.List;
 
 public class RollupProcDirTest {
     private Database db;
+    private MaterializedViewHandler handler;
     private RollupProcDir rollupProcDir;
 
     private static List<Comparable> job(int jobId, String tableName, String state) {
@@ -59,7 +64,7 @@ public class RollupProcDirTest {
     @BeforeEach
     public void setUp() {
         db = new Database(10000L, "db1");
-        MaterializedViewHandler handler = new MaterializedViewHandler();
+        handler = new MaterializedViewHandler();
         rollupProcDir = new RollupProcDir(handler, db);
 
         List<List<Comparable>> infos = Lists.newArrayList();
@@ -84,6 +89,26 @@ public class RollupProcDirTest {
         Assertions.assertEquals(3, rows.size());
         Assertions.assertEquals(RollupProcDir.TITLE_NAMES.size(), rows.get(0).size());
         Assertions.assertEquals("1", rows.get(0).get(0));
+    }
+
+    @Test
+    public void testFetchResultTakesTheSameRoad() throws AnalysisException {
+        // The other entry point. SHOW PROC and the proc HTTP endpoints call this one rather than
+        // fetchResultByFilter, and it used to build its answer with its own copy of the loop; it
+        // now goes through ProcUtils.toProcResult like the filtered road does. Asserting it here
+        // keeps that from quietly coming apart again.
+        BaseProcResult result = (BaseProcResult) rollupProcDir.fetchResult();
+        List<List<String>> rows = result.getRows();
+        Assertions.assertEquals(RollupProcDir.TITLE_NAMES, result.getColumnNames());
+        Assertions.assertEquals(3, rows.size());
+        Assertions.assertEquals(RollupProcDir.TITLE_NAMES.size(), rows.get(0).size());
+        // Every cell arrives stringified, which is what the shared builder does.
+        Assertions.assertEquals(List.of("1", "tb1", "2020-01-01", "2020-01-01", "base", "rollup",
+                "101", "0", "FINISHED", "", "100", "10000"), rows.get(0));
+
+        // No filter, so the two roads must answer with the same rows.
+        Assertions.assertEquals(
+                ((BaseProcResult) rollupProcDir.fetchResultByFilter(null, null, null)).getRows(), rows);
     }
 
     @Test
@@ -131,5 +156,32 @@ public class RollupProcDirTest {
         Assertions.assertEquals(8, RollupProcDir.analyzeColumn("State"));
         Assertions.assertEquals(5, RollupProcDir.analyzeColumn("RollupIndexName"));
         Assertions.assertThrows(AnalysisException.class, () -> RollupProcDir.analyzeColumn("SchemaVersion"));
+    }
+
+    @Test
+    public void testLookupRollupJobV2() throws AnalysisException {
+        RollupJobV2 job = new RollupJobV2();
+        new MockUp<AlterHandler>() {
+            @Mock
+            public AlterJobV2 getUnfinishedAlterJobV2ByJobId(long jobId) {
+                return jobId == 7L ? job : null;
+            }
+        };
+
+        Assertions.assertTrue(rollupProcDir.lookup("7") instanceof RollupJobProcNode);
+    }
+
+    @Test
+    public void testLookupRejectsJobOfOtherType() {
+        LakeRollupJob job = new LakeRollupJob();
+        new MockUp<AlterHandler>() {
+            @Mock
+            public AlterJobV2 getUnfinishedAlterJobV2ByJobId(long jobId) {
+                return jobId == 8L ? job : null;
+            }
+        };
+
+        AnalysisException e = Assertions.assertThrows(AnalysisException.class, () -> rollupProcDir.lookup("8"));
+        Assertions.assertTrue(e.getMessage().contains("LakeRollupJob"), e.getMessage());
     }
 }

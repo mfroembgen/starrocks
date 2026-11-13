@@ -86,6 +86,33 @@ SELECT * FROM information_schema.be_configs [WHERE NAME LIKE "%<name_pattern>%"]
 - 説明: 共有データクラスタでのクラウドネイティブテーブルコンパクションのためのリーダーのリモート I/O バッファサイズ。デフォルト値は 1MB です。この値を増やすことでコンパクションプロセスを加速できます。
 - 導入バージョン: v3.2.3
 
+### lake_dump_tablet_metadata_per_request_memory_limit_bytes
+
+- デフォルト: 268435456
+- タイプ: Long
+- 単位: バイト
+- 変更可能: はい
+- 説明: CN が 1 件の `/api/cloudnative/dump_tablet_metadata` リクエストを同期処理するときの追跡対象メモリ予算です。バイト単位の厳密な上限ではなく、標準の MemTracker の集計粒度を使用します。メタデータの検査、機密フィールドのマスキング、JSON シリアライズを対象としますが、CN のメタデータキャッシュに既に格納されているメタデータと非同期 HTTP 出力バッファは対象外です。各リクエストは受付時に取得した値を使用します。この値が `0` 以下の場合、新しいリクエストは fail-closed で拒否されます。
+- 導入バージョン: v4.1.7
+
+### lake_dump_tablet_metadata_per_request_json_size_limit_bytes
+
+- デフォルト: 33554432
+- タイプ: Long
+- 単位: バイト
+- 変更可能: はい
+- 説明: 1 件の `/api/cloudnative/dump_tablet_metadata` リクエストが返す完全な JSON レスポンスの最大バイト数です。HTTP 出力バッファへ渡す前にサイズを検査します。各リクエストは受付時に取得した値を使用します。この値が `0` 以下の場合、新しいリクエストは fail-closed で拒否されます。
+- 導入バージョン: v4.1.7
+
+### lake_dump_tablet_metadata_max_concurrency
+
+- デフォルト: 1
+- タイプ: Int
+- 単位: リクエスト
+- 変更可能: はい
+- 説明: 1 台の CN で同時に受け付ける `/api/cloudnative/dump_tablet_metadata` リクエスト数の上限です。各リクエストは HTTP request が解放されるまで 1 スロットを使用します。値を増やすと新しいリクエストに直ちに反映されます。値を減らしても受付済みのリクエストはキャンセルされず、アクティブ数が新しい上限未満になるまで新しいリクエストは拒否されます。この値が `0` 以下の場合、新しいリクエストは fail-closed で拒否されます。
+- 導入バージョン: v4.1.7
+
 ### lake_enable_del_file_crc_check
 
 - デフォルト: true
@@ -122,13 +149,22 @@ SELECT * FROM information_schema.be_configs [WHERE NAME LIKE "%<name_pattern>%"]
 - 説明: 共有データクラスタでの主キーテーブルコンパクションタスクで許可される最大入力 rowset 数。このパラメータのデフォルト値は v3.2.4 および v3.1.10 以降 `5` から `1000` に、v3.3.1 および v3.2.9 以降 `500` に変更されました。主キーテーブルのためのサイズ階層型コンパクションポリシーが有効になった後 (`enable_pk_size_tiered_compaction_strategy` を `true` に設定することで)、StarRocks は各コンパクションの rowset 数を制限して書き込み増幅を減らす必要がなくなります。したがって、このパラメータのデフォルト値は増加しました。
 - 導入バージョン: v3.1.8, v3.2.3
 
+### lake_pk_compaction_base_enable_delete_trigger
+
+- デフォルト: false
+- タイプ: Boolean
+- 単位: -
+- 変更可能: はい
+- 説明: 共有データクラスタで、主キーテーブルの tablet の削除量が `lake_pk_compaction_base_delete_ratio_threshold` または `lake_pk_compaction_base_delete_rows_threshold` に達したときに、累積コンパクションからベースコンパクションへ自動的に切り替えるかどうか。`lake_pk_compaction_base_delete_rows_threshold` は絶対行数であるため、デフォルトでは無効です。既存の行が継続的に更新または削除される大きなテーブルでは、tablet はベースコンパクションのたびにすぐ再びこの値に達し、各ベースコンパクションは tablet のデータのうち最大 `update_compaction_ratio_threshold` (デフォルト 0.5) の割合を書き換えます。手動の `ALTER TABLE ... COMPACT` は、この項目の設定に関係なくベースコンパクションを実行します。
+- 導入バージョン: v4.1.7
+
 ### lake_pk_compaction_base_delete_ratio_threshold
 
 - デフォルト: 0.5
 - タイプ: Double
 - 単位: -
 - 変更可能: はい
-- 説明: 共有データクラスタで、主キーテーブルの tablet を累積コンパクション (サイズ階層型の小ファイルマージ) からベースコンパクションに切り替える 2 つのトリガーの 1 つ。ベースコンパクションは削除を含む rowset を (削除行数の多いものから優先して) 書き換え、削除された行を物理的に除去して delete vector を縮小します。tablet の集約削除率 (各 rowset の `sum(num_dels) / sum(num_rows)`) がこの値に達したとき、絶対削除行数が `lake_pk_compaction_base_delete_rows_threshold` に達したとき、または手動の `ALTER TABLE ... COMPACT` がベースコンパクションを強制したときに実行されます。両方のしきい値を十分大きく設定すると自動トリガーを無効化できます。
+- 説明: 共有データクラスタで、主キーテーブルの tablet を累積コンパクション (サイズ階層型の小ファイルマージ) からベースコンパクションに切り替える 2 つのトリガーの 1 つ。ベースコンパクションは削除を含む rowset を (削除行数の多いものから優先して) 書き換え、削除された行を物理的に除去して delete vector を縮小します。`lake_pk_compaction_base_enable_delete_trigger` が `true` の場合、tablet の集約削除率 (各 rowset の `sum(num_dels) / sum(num_rows)`) がこの値に達したとき、または絶対削除行数が `lake_pk_compaction_base_delete_rows_threshold` に達したときに実行されます。手動の `ALTER TABLE ... COMPACT` は、これらの設定に関係なくベースコンパクションを強制します。
 - 導入バージョン: v4.1.4
 
 ### lake_pk_compaction_base_delete_rows_threshold
@@ -137,7 +173,7 @@ SELECT * FROM information_schema.be_configs [WHERE NAME LIKE "%<name_pattern>%"]
 - タイプ: Int
 - 単位: -
 - 変更可能: はい
-- 説明: 共有データクラスタでの主キーテーブルのベースコンパクションの 2 つのトリガーの 1 つ (`lake_pk_compaction_base_delete_ratio_threshold` を参照)。tablet の絶対削除行数 (各 rowset の `sum(num_dels)`) がこの値に達したときにベースコンパクションが実行されます。この絶対数トリガーは比率トリガーを補完します。高頻度の更新/削除テーブルでは、delete vector が肥大化して領域が無駄になる一方、集約削除率は多数のほぼ生存している rowset によって希釈されて低いままになるため、比率トリガーだけでは発火しません。この値を大きくするとベースコンパクションの頻度が下がり、小さくすると delete vector をより早く回収できます。
+- 説明: 共有データクラスタでの主キーテーブルのベースコンパクションの 2 つのトリガーの 1 つ (`lake_pk_compaction_base_delete_ratio_threshold` を参照)。`lake_pk_compaction_base_enable_delete_trigger` が `true` の場合、tablet の絶対削除行数 (各 rowset の `sum(num_dels)`) がこの値に達したときにベースコンパクションが実行されます。この絶対数トリガーは比率トリガーを補完します。高頻度の更新/削除テーブルでは、delete vector が肥大化して領域が無駄になる一方、集約削除率は多数のほぼ生存している rowset によって希釈されて低いままになるため、比率トリガーだけでは発火しません。この値を大きくするとベースコンパクションの頻度が下がり、小さくすると delete vector をより早く回収できます。
 - 導入バージョン: v4.1.4
 
 ### lake_put_txn_log_timeout_guard_ms
@@ -536,11 +572,29 @@ SELECT * FROM information_schema.be_configs [WHERE NAME LIKE "%<name_pattern>%"]
 
 ### lake_replication_file_copy_threads
 
-- デフォルト: 0
+- デフォルト: 16
 - タイプ: Int
 - 単位: -
 - 変更可能: いいえ
-- 説明: 共有データのクロスクラスタレプリケーション（lake-to-lake replication）でファイルごとのコピーに使用する専用スレッドプールのサイズ。`0` は `cpu_cores * 4`（`replication_threads` と同じデフォルトセマンティクス）を意味し、負の値は `-value * cpu_cores` を意味します。このプールはエージェントタスクの `replicate_snapshot` プールと意図的に分離されており、外部タスクが `ThreadPoolToken::wait()` を通じてファイルごとのコピーサブタスクを安全に待機でき、スレッドプールのセルフデッドロックガードをトリガーしません。このプールは起動時に一度だけ作成され、ランタイムのリサイズフックはないため、サイズ変更には CN の再起動が必要です。
+- 説明: 共有データのクロスクラスタレプリケーション（lake-to-lake replication）でファイルごとのコピーに使用する CN 全体の専用スレッドプールのサイズ。デフォルト値は、CPU コア数に関係なく、同時コピータスク数とその読み取りバッファを制限します。`0` は `cpu_cores * 4` を意味し、負の値は `-value * cpu_cores` を意味します。このプールは起動時に一度だけ作成されるため、サイズ変更には CN の再起動が必要です。
+- 導入バージョン: v4.1.2
+
+### lake_replication_max_parallel_files_per_tablet
+
+- デフォルト: 4
+- タイプ: Int
+- 単位: -
+- 変更可能: はい
+- 説明: 共有データのクロスクラスタレプリケーション（lake-to-lake replication）で、1 つの tablet に対して同時にコピーするファイルの最大数。すべての tablet が CN 全体の `lake_replication_file_copy_threads` プールを共有するため、この設定により 1 つの tablet がプールを占有することを防ぎます。値が `1` 以下の場合、各 tablet 内のファイルコピーは直列化されます。
+- 導入バージョン: v4.1.4
+
+### lake_replication_parallel_copy_min_file_count
+
+- デフォルト: 2
+- タイプ: Int
+- 単位: -
+- 変更可能: はい
+- 説明: 共有データのクロスクラスタレプリケーション（lake-to-lake replication）で、tablet 内のファイルを並列にコピーするために必要な最小ファイル数。このパラメータを `0` に設定すると専用ファイルコピープールが無効になり、呼び出し元のレプリケーションタスクでファイルコピーが実行されます。
 - 導入バージョン: v4.1.2
 
 ### lake_service_max_concurrency
