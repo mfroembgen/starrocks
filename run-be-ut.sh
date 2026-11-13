@@ -42,6 +42,7 @@ Usage: $0 <options>
      --with-bench                   enable to build with benchmark
      --excluding-test-suit          don't run cases of specific suit
      --module                       module to run uts
+     --build-target TARGET          build only the specified CMake target
      --enable-shared-data           enable to build with shared-data feature support
      --without-starcache            build without starcache library
      --use-staros                   DEPRECATED. an alias of --enable-shared-data option
@@ -87,6 +88,7 @@ OPTS=$(getopt \
   -l 'with-gcov' \
   -l 'with-dynamic' \
   -l 'module:' \
+  -l 'build-target:' \
   -l 'with-aws' \
   -l 'with-bench' \
   -l 'excluding-test-suit:' \
@@ -112,6 +114,7 @@ CLEAN=0
 DRY_RUN=0
 TEST_NAME=*
 TEST_MODULE=".*"
+BUILD_TARGET=""
 EXCLUDING_TEST_SUIT=
 HELP=0
 WITH_AWS=OFF
@@ -131,6 +134,7 @@ while true; do
         --test) TEST_NAME=${2}* ; shift 2;;
         --gtest_filter) TEST_NAME=$2 ; shift 2;;
         --module) TEST_MODULE=$2; shift 2;;
+        --build-target) BUILD_TARGET=$2; shift 2;;
         --help) HELP=1 ; shift ;;
         --with-aws) WITH_AWS=ON; shift ;;
         --with-gcov) WITH_GCOV=ON; shift ;;
@@ -234,7 +238,11 @@ ${CMAKE_CMD}  -G "${CMAKE_GENERATOR}" \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             ${STARROCKS_HOME}/be
 
-${BUILD_SYSTEM} -j${PARALLEL}
+if [[ -n "$BUILD_TARGET" ]]; then
+    ${BUILD_SYSTEM} -j${PARALLEL} "$BUILD_TARGET"
+else
+    ${BUILD_SYSTEM} -j${PARALLEL}
+fi
 
 cd ${STARROCKS_HOME}
 export STARROCKS_TEST_BINARY_BASE_DIR=${CMAKE_BUILD_DIR}
@@ -255,8 +263,11 @@ if [ "x$WITH_DEBUG_SYMBOL_SPLIT" = "xON" ] ; then
             split_debug_symbol "$so"
         done
     fi
-    split_debug_symbol ${STARROCKS_TEST_BINARY_BASE_DIR}/test/starrocks_test
-    split_debug_symbol ${STARROCKS_TEST_BINARY_BASE_DIR}/test/starrocks_dw_test
+    for test_binary in starrocks_test starrocks_dw_test; do
+        if [[ -f "${STARROCKS_TEST_BINARY_DIR}/${test_binary}" ]]; then
+            split_debug_symbol "${STARROCKS_TEST_BINARY_DIR}/${test_binary}"
+        fi
+    done
 fi
 
 echo "*********************************"
@@ -342,6 +353,7 @@ if [ -n "$EXCLUDING_TEST_SUIT" ]; then
 fi
 
 # prepare util test_data
+mkdir -p ${STARROCKS_TEST_BINARY_DIR}/util
 if [ -d ${STARROCKS_TEST_BINARY_DIR}/util/test_data ]; then
     rm -rf ${STARROCKS_TEST_BINARY_DIR}/util/test_data
 fi
