@@ -1,12 +1,12 @@
-# Native 4.1.6 Theta images
+# Native 4.1.7 Theta images
 
-This fork starts at upstream StarRocks `4.1.6`, commit
-`6862092fd57e95a892fdfd465ac4ae3a9beefbe1`.
+This fork starts at upstream StarRocks `4.1.7`, commit
+`b81ff9cc465a5f2e5e53104d87a59b349808abd9`.
 The manually dispatched [Native Theta images workflow](../../../.github/workflows/theta-images.yml)
 tests and builds the selected fork commit separately on native AMD64 and ARM64
 GitHub runners. It does not use CPU emulation or access a deployed cluster.
 
-Use a homogeneous fork BE/CN worker set for each query. Stock 4.1.6 cannot read
+Use a homogeneous fork BE/CN worker set for each query. Stock 4.1.7 cannot read
 this fork's `[0xFE][log_k]` partial or persisted Theta states and silently ignores
 them, so mixing stock and fork workers can undercount. Before rolling back to
 stock, convert or rematerialize framed stored states. Compatibility with the
@@ -20,12 +20,12 @@ The workflow publishes these repositories:
 - `ghcr.io/mfroembgen/starrocks-be`
 - `ghcr.io/mfroembgen/starrocks-cn`
 
-Each receives `4.1.6-theta-<full-source-SHA>-amd64` and `-arm64` tags, followed by
-the `4.1.6-theta-<full-source-SHA>` multiarch index after both platforms pass.
+Each receives `4.1.7-theta-<full-source-SHA>-amd64` and `-arm64` tags, followed by
+the `4.1.7-theta-<full-source-SHA>` multiarch index after both platforms pass.
 Deploy by the recorded **index digest**, which identifies the exact build.
 Source tags identify a source revision; rerunning a build can produce different
 digests because upstream embeds build timestamps and Maven resolves dependencies.
-There is no floating `latest` or upstream `4.1.6` replacement tag.
+There is no floating `latest` or upstream `4.1.7` replacement tag.
 
 BE and CN publish the same shared-data-enabled backend payload under both role
 names. They retain upstream `/opt/starrocks/be` and `/opt/starrocks/cn -> be`,
@@ -41,8 +41,8 @@ in its GitHub package settings and verify anonymous pulls before deployment.
 
 ## Build inputs and gates
 
-The Dockerfile pins the official `starrocks/dev-env-ubuntu:4.1.6` multiarch index
-and the official `starrocks/{fe,be}-ubuntu:4.1.6` runtime indexes by digest. The
+The Dockerfile pins the official `starrocks/dev-env-ubuntu:4.1.7` multiarch index
+and the official `starrocks/{fe,be}-ubuntu:4.1.7` runtime indexes by digest. The
 builder supplies Ubuntu 22.04, Java 17 and the matching prebuilt thirdparty/starlet
 dependencies. Runtime images preserve upstream startup scripts, dependencies and
 profiling tools, replacing their FE/BE binaries, libraries and configuration with
@@ -98,6 +98,6 @@ build preserves that isolation without the upstream artifact image's floating
 DataDog/Arthas downloads or unrelated broker build.
 
 Sources: [upstream Docker build guide](https://docs.starrocks.io/docs/developers/build-starrocks/Build_in_docker/),
-[upstream 4.1.6 runtime Dockerfiles](https://github.com/StarRocks/starrocks/tree/4.1.6/docker/dockerfiles),
+[upstream 4.1.7 runtime Dockerfiles](https://github.com/StarRocks/starrocks/tree/4.1.7/docker/dockerfiles),
 [GitHub runner resources](https://docs.github.com/en/actions/reference/runners/github-hosted-runners),
 [GHCR visibility](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility).

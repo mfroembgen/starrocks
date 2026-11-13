@@ -14,7 +14,7 @@ Accepts both StarRocks `[0xFE][log_k]` framing and bare Apache DataSketches comp
 
 Invalid, truncated, or wrong-seed states rejected during deserialization are ignored, preserving the existing `ds_theta_count_distinct_merge` behavior. This can undercount; callers must validate imported sketch bytes before loading them.
 
-All BE/CN workers participating in a query must support this fork's framed format. Stock StarRocks 4.1.6 cannot read `[0xFE][log_k]` partial or persisted states and silently ignores them, so mixed stock/fork workers can undercount. A rollback to stock requires converting or rematerializing framed stored states before they are read by stock workers.
+All BE/CN workers participating in a query must support this fork's framed format. Stock StarRocks 4.1.7 cannot read `[0xFE][log_k]` partial or persisted states and silently ignores them, so mixed stock/fork workers can undercount. A rollback to stock requires converting or rematerializing framed stored states before they are read by stock workers.
 
 Bare sketches use `theta_sketch_default_lg_k` (default 14) for the union. Framed sketches carry their precision; mixed framed precisions promote the union to the largest observed `log_k`. Promotion cannot recover hashes discarded by lower-precision inputs or earlier unions. Use one precision throughout a distributed workflow.
 

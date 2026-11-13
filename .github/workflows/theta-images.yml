@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE_TAG: 4.1.6-theta-${{ github.sha }}
+  IMAGE_TAG: 4.1.7-theta-${{ github.sha }}
   IMAGE_ROOT: ghcr.io/mfroembgen/starrocks
 
 jobs:
